@@ -41,3 +41,4 @@ build/
 # Hermes specific
 .hermes/
 /tmp/
+config.yaml

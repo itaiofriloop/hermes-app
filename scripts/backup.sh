@@ -31,10 +31,19 @@ fi
 log "Recipient: $AGE_RECIPIENT"
 
 # ── Validate prerequisites ───────────────────────────────────
-command -v sqlite3 >/dev/null || err "sqlite3 not found"
 command -v age    >/dev/null || err "age not found"
 [ -f "$HERMES_DB" ]           || err "hermes.db not found at $HERMES_DB"
 [ -d "$HERMES_DATA_REPO" ]    || err "hermes-data repo not found at $HERMES_DATA_REPO"
+
+# sqlite3 CLI or Python sqlite3 module (one must be available)
+SQLITE3_CLI=""
+if command -v sqlite3 >/dev/null; then
+  SQLITE3_CLI="sqlite3"
+elif command -v python3 >/dev/null; then
+  SQLITE3_CLI="python3"
+else
+  err "neither sqlite3 CLI nor python3 found"
+fi
 
 DB_OUT="$HERMES_DATA_REPO/database"
 FILES_OUT="$HERMES_DATA_REPO/files"
@@ -46,7 +55,19 @@ mkdir -p "$DB_OUT" "$FILES_OUT"
 log "Creating SQLite snapshot..."
 SNAPSHOT="$TEMP_DIR/hermes-backup.db"
 mkdir -p "$TEMP_DIR"
-sqlite3 "$HERMES_DB" ".backup '$SNAPSHOT'"
+
+if [ "$SQLITE3_CLI" = "sqlite3" ]; then
+  sqlite3 "$HERMES_DB" ".backup '$SNAPSHOT'"
+elif [ "$SQLITE3_CLI" = "python3" ]; then
+  python3 -c "
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1])
+dst = sqlite3.connect(sys.argv[2])
+src.backup(dst)
+dst.close()
+src.close()
+" "$HERMES_DB" "$SNAPSHOT"
+fi
 log "  → snapshot: $(stat -c %s "$SNAPSHOT" 2>/dev/null || echo '?') bytes"
 
 # ── Step 2: Encrypt DB ───────────────────────────────────────
@@ -116,6 +137,13 @@ log "Committing to hermes-data..."
 cd "$HERMES_DATA_REPO"
 git add -A
 git commit -m "backup: $TIMESTAMP" || log "  → no changes to commit"
-git push || err "git push failed"
+
+# Push only if a remote is configured
+if [ -n "$(git remote)" ]; then
+  git push || err "git push failed"
+  log "  → pushed to remote"
+else
+  log "  → no remote configured, commit saved locally"
+fi
 
 log "✅ Backup complete: $TIMESTAMP"
