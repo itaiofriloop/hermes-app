@@ -89,50 +89,59 @@ DB_SHA=$(sha256sum "$DB_ENC" | awk '{print $1}')
 DB_SIZE=$(stat -c %s "$DB_ENC")
 export DB_SHA DB_SIZE
 
-# ── Step 3 & 4: Encrypt personal files & update manifest via Python ────
-log "Encrypting personal files and generating manifest..."
+# ── Step 3 & 4: Encrypt user data & workspace data via Python ────
+log "Encrypting core user data and workspace attachments/databases..."
 
 python3 -c "
 import os, subprocess, hashlib, json, datetime
 
-hermes_home = os.environ['HERMES_HOME']
 data_repo = os.environ['HERMES_DATA_REPO']
 recipient = os.environ['AGE_RECIPIENT']
 files_out = os.path.join(data_repo, 'files')
 os.makedirs(files_out, exist_ok=True)
 
-skip_suffixes = ('.db', '-wal', '-shm', '.key')
-skip_substrings = ('node_modules', '/logs/', '/bin/', '/lsp/', '/.cache/', 'plugins/hermes-achievements')
+# Sources to back up (user core data + workspace data/attachments)
+sources = [
+    os.path.expanduser('~/.hermes/memories'),
+    os.path.expanduser('~/.hermes/config.yaml'),
+    os.path.expanduser('~/.hermes/.env'),
+    os.path.expanduser('~/workspace/data')
+]
 
 files_list = []
 count = 0
 
-for root, dirs, filenames in os.walk(hermes_home):
-    # Prune unwanted directories in-place
-    dirs[:] = [d for d in dirs if d not in ('node_modules', 'logs', 'bin', 'lsp', '.cache', 'hermes-achievements')]
-    
-    for fn in filenames:
-        f_path = os.path.join(root, fn)
+for src in sources:
+    if not os.path.exists(src):
+        continue
         
-        # Check skip rules
-        if any(f_path.endswith(s) for s in skip_suffixes):
+    if os.path.isfile(src):
+        item_paths = [src]
+    else:
+        item_paths = []
+        for root, dirs, filenames in os.walk(src):
+            # Skip node_modules or caches if inside workspace
+            dirs[:] = [d for d in dirs if d not in ('node_modules', '.cache', 'dist', 'build')]
+            for fn in filenames:
+                item_paths.append(os.path.join(root, fn))
+                
+    for f_path in item_paths:
+        if not os.path.isfile(f_path):
             continue
-        if any(sub in f_path for sub in skip_substrings):
-            continue
-        if 'identity' in fn.lower() or 'key' in fn.lower():
+            
+        # Skip temporary/lock files
+        if f_path.endswith('.lock') or '-shm' in f_path or '-wal' in f_path:
             continue
             
         # Encrypt file
         rel_enc = f'files/{count}.age'
         full_enc = os.path.join(data_repo, rel_enc)
         
-        # Run age
         res = subprocess.run(['age', '-r', recipient, '-o', full_enc, f_path], capture_output=True)
         if res.returncode != 0:
             print(f'Warning: failed to encrypt {f_path}: {res.stderr.decode()}', file=sys.stderr)
             continue
             
-        # Calculate hashes & sizes
         with open(full_enc, 'rb') as ef:
             enc_data = ef.read()
             enc_sha = hashlib.sha256(enc_data).hexdigest()
@@ -145,7 +154,8 @@ for root, dirs, filenames in os.walk(hermes_home):
             
         files_list.append({
             'id': str(count),
-            'name': fn,
+            'name': os.path.basename(f_path),
+            'rel_path': os.path.relpath(f_path, os.path.expanduser('~')),
             'enc_path': rel_enc,
             'enc_sha256': enc_sha,
             'enc_size': enc_size,
@@ -154,7 +164,7 @@ for root, dirs, filenames in os.walk(hermes_home):
         })
         count += 1
 
-print(f'Encrypted {count} file(s).')
+print(f'Encrypted {count} core user/workspace file(s).')
 
 # Write manifest
 timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
