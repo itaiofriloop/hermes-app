@@ -1,0 +1,25 @@
+# Gitleaks configuration for hermes-app
+# https://github.com/gitleaks/gitleaks
+
+title = "hermes-app"
+
+[extend]
+useDefault = true
+
+# Allow example/template files that contain placeholder secrets
+[allowlist]
+description = "Allow example, template, and test files with placeholder secrets"
+paths = [
+  '''config\.example\.yaml''',
+  '''\.env\.example''',
+  '''README\.md''',
+  '''.*\.example''',
+  '''testdata/.*''',
+  '''fixtures/.*''',
+  '''.*\.test\..*''',
+]
+# Allow placeholder values in example configs
+regexes = [
+  '''age1\.\.\.''',
+  '''AGE-SECRET-KEY-1\.\.\.''',
+]

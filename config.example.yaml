@@ -1,0 +1,4 @@
+# Example configuration for Hermes
+
+# Age public key for encryption (configurable)
+AGE_RECIPIENT="age1..."
