@@ -12,7 +12,16 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-HERMES_DB="$HERMES_HOME/hermes.db"
+# Auto-detect main DB: state.db (current) or hermes.db (plan default)
+HERMES_DB="${HERMES_DB:-}"
+if [ -z "$HERMES_DB" ]; then
+  for candidate in "$HERMES_HOME/state.db" "$HERMES_HOME/hermes.db"; do
+    if [ -f "$candidate" ]; then
+      HERMES_DB="$candidate"
+      break
+    fi
+  done
+fi
 HERMES_DATA_REPO="${HERMES_DATA_REPO:-$HOME/projects/hermes-data}"
 CONFIG_FILE="${CONFIG_FILE:-$HOME/projects/hermes-app/config.yaml}"
 TEMP_DIR="/tmp/hermes-backup-$$"
@@ -72,65 +81,105 @@ log "  → snapshot: $(stat -c %s "$SNAPSHOT" 2>/dev/null || echo '?') bytes"
 
 # ── Step 2: Encrypt DB ───────────────────────────────────────
 log "Encrypting database..."
-DB_ENC="$DB_OUT/hermes.db.age"
+DB_ENC="$DB_OUT/state.db.age"
 age -r "$AGE_RECIPIENT" -o "$DB_ENC" "$SNAPSHOT"
 log "  → $DB_ENC"
 
 DB_SHA=$(sha256sum "$DB_ENC" | awk '{print $1}')
 DB_SIZE=$(stat -c %s "$DB_ENC")
+export DB_SHA DB_SIZE
 
-# ── Step 3: Encrypt personal files ───────────────────────────
-FILES_ENC_LIST="[]"
-# Backup everything in ~/.hermes EXCEPT the DB itself
-# (DB already encrypted above) and the age private key
-COUNT=0
-while IFS= read -r -d '' f; do
-  # Skip the DB (already backed up) and private keys
-  case "$f" in
-    *.db)        continue ;;
-    *identity*)  continue ;;
-    *.key)       continue ;;
-  esac
+# ── Step 3 & 4: Encrypt personal files & update manifest via Python ────
+log "Encrypting personal files and generating manifest..."
 
-  REL="files/$COUNT.age"
-  age -r "$AGE_RECIPIENT" -o "$HERMES_DATA_REPO/$REL" "$f"
+python3 -c "
+import os, subprocess, hashlib, json, datetime
 
-  F_SHA=$(sha256sum "$HERMES_DATA_REPO/$REL" | awk '{print $1}')
-  F_SIZE=$(stat -c %s "$HERMES_DATA_REPO/$REL")
-  ORIG_SHA=$(sha256sum "$f" | awk '{print $1}')
+hermes_home = os.environ['HERMES_HOME']
+data_repo = os.environ['HERMES_DATA_REPO']
+recipient = os.environ['AGE_RECIPIENT']
+files_out = os.path.join(data_repo, 'files')
+os.makedirs(files_out, exist_ok=True)
 
-  # Build JSON entry — use generated ID, keep original size/SHA encrypted-side
-  FILES_ENC_LIST=$(echo "$FILES_ENC_LIST" | jq -c \
-    --arg id "$COUNT" \
-    --arg enc "$REL" \
-    --arg sha "$F_SHA" \
-    --argjson size "$F_SIZE" \
-    --arg orig_sha "$ORIG_SHA" \
-    --arg orig_size "$(stat -c %s "$f")" \
-    '. + [{"id":$id,"enc_path":$enc,"enc_sha256":$sha,"enc_size":$size,"orig_sha256":$orig_sha,"orig_size":$orig_size}]')
+skip_suffixes = ('.db', '-wal', '-shm', '.key')
+skip_substrings = ('node_modules', '/logs/', '/bin/', '/lsp/', '/.cache/', 'plugins/hermes-achievements')
 
-  COUNT=$((COUNT + 1))
-done < <(find "$HERMES_HOME" -type f -print0 2>/dev/null | sort -z)
+files_list = []
+count = 0
 
-log "  → $COUNT file(s) encrypted"
+for root, dirs, filenames in os.walk(hermes_home):
+    # Prune unwanted directories in-place
+    dirs[:] = [d for d in dirs if d not in ('node_modules', 'logs', 'bin', 'lsp', '.cache', 'hermes-achievements')]
+    
+    for fn in filenames:
+        f_path = os.path.join(root, fn)
+        
+        # Check skip rules
+        if any(f_path.endswith(s) for s in skip_suffixes):
+            continue
+        if any(sub in f_path for sub in skip_substrings):
+            continue
+        if 'identity' in fn.lower() or 'key' in fn.lower():
+            continue
+            
+        # Encrypt file
+        rel_enc = f'files/{count}.age'
+        full_enc = os.path.join(data_repo, rel_enc)
+        
+        # Run age
+        res = subprocess.run(['age', '-r', recipient, '-o', full_enc, f_path], capture_output=True)
+        if res.returncode != 0:
+            print(f'Warning: failed to encrypt {f_path}: {res.stderr.decode()}', file=sys.stderr)
+            continue
+            
+        # Calculate hashes & sizes
+        with open(full_enc, 'rb') as ef:
+            enc_data = ef.read()
+            enc_sha = hashlib.sha256(enc_data).hexdigest()
+            enc_size = len(enc_data)
+            
+        with open(f_path, 'rb') as of:
+            orig_data = of.read()
+            orig_sha = hashlib.sha256(orig_data).hexdigest()
+            orig_size = len(orig_data)
+            
+        files_list.append({
+            'id': str(count),
+            'name': fn,
+            'enc_path': rel_enc,
+            'enc_sha256': enc_sha,
+            'enc_size': enc_size,
+            'orig_sha256': orig_sha,
+            'orig_size': orig_size
+        })
+        count += 1
 
-# ── Step 4: Update manifest ──────────────────────────────────
-log "Updating manifest..."
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+print(f'Encrypted {count} file(s).')
 
-jq -n \
-  --arg ts "$TIMESTAMP" \
-  --arg db_enc "database/hermes.db.age" \
-  --arg db_sha "$DB_SHA" \
-  --argjson db_size "$DB_SIZE" \
-  --argjson files "$FILES_ENC_LIST" \
-  '{timestamp: $ts, database: {path: $db_enc, sha256: $db_sha, size: $db_size}, files: $files}' \
-  > "$MANIFEST"
+# Write manifest
+timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+db_sha = os.environ.get('DB_SHA', '')
+db_size = int(os.environ.get('DB_SIZE', '0'))
 
-log "  → manifest written"
+manifest_data = {
+    'timestamp': timestamp,
+    'database': {
+        'path': 'database/state.db.age',
+        'sha256': db_sha,
+        'size': db_size
+    },
+    'files': files_list
+}
 
-# ── Step 5: Clean up temp ────────────────────────────────────
+with open(os.path.join(data_repo, 'manifest.json'), 'w') as mf:
+    json.dump(manifest_data, mf, indent=2)
+
+print('Manifest updated successfully.')
+"
+
+# ── Step 5: Clean up temp & Commit ─────────────────────────────
 rm -rf "$TEMP_DIR"
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # ── Step 6: Git commit + push ────────────────────────────────
 log "Committing to hermes-data..."

@@ -64,7 +64,8 @@ ACTUAL_SHA=$(sha256sum "$DB_ENC" | awk '{print $1}')
 [ "$ACTUAL_SHA" = "$DB_SHA" ] || err "DB checksum mismatch! Expected $DB_SHA, got $ACTUAL_SHA"
 log "DB checksum verified ✓"
 
-DB_DEST="$DEST/hermes.db"
+DB_BASENAME=$(basename "$DB_PATH" .age)
+DB_DEST="$DEST/$DB_BASENAME"
 age -d -i "$AGE_IDENTITY" -o "$DB_DEST" "$DB_ENC"
 log "  → decrypted to $DB_DEST"
 
@@ -85,10 +86,11 @@ if [ "$FILE_COUNT" -gt 0 ]; then
     ACTUAL=$(sha256sum "$ENC_FULL" | awk '{print $1}')
     [ "$ACTUAL" = "$ENC_SHA" ] || err "File $FILE_ID checksum mismatch!"
 
-    # Decrypt to destination with original basename (or ID if unknown)
-    OUT_FILE="$DEST/restored-$FILE_ID"
+    # Decrypt to destination with original basename
+    FILE_NAME=$(jq -r ".files[$i].name" "$MANIFEST")
+    OUT_FILE="$DEST/$FILE_NAME"
     age -d -i "$AGE_IDENTITY" -o "$OUT_FILE" "$ENC_FULL"
-    log "  → restored-$FILE_ID ($ENC_SIZE bytes) ✓"
+    log "  → $FILE_NAME ($ENC_SIZE bytes) ✓"
   done
 else
   log "No personal files to restore."
