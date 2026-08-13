@@ -50,7 +50,7 @@ if [ "$FILE_COUNT" -gt 0 ]; then
     FILE_NAME=$(jq -r ".files[$i].name" "$MANIFEST")
     ORIG_PATH=$(jq -r ".files[$i].orig_path" "$MANIFEST")
     
-    SRC="$HERMES_DATA_REPO/$FILE_PATH"
+    SRC="$HERMES_DATA_REPO/files/$FILE_PATH"
     [ -f "$SRC" ] || { err "File not found: $SRC"; }
     
     ACTUAL=$(sha256sum "$SRC" | awk '{print $1}')
