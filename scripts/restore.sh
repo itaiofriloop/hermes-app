@@ -56,8 +56,11 @@ if [ "$FILE_COUNT" -gt 0 ]; then
     ACTUAL=$(sha256sum "$SRC" | awk '{print $1}')
     [ "$ACTUAL" = "$FILE_SHA" ] || err "File $FILE_NAME checksum mismatch!"
     
-    cp "$SRC" "$DEST/$FILE_NAME"
-    log "  → restored $FILE_NAME ✓"
+    # Restore preserving directory structure
+    DEST_FILE="$DEST/$FILE_PATH"
+    mkdir -p "$(dirname "$DEST_FILE")"
+    cp "$SRC" "$DEST_FILE"
+    log "  → restored $FILE_PATH ✓"
   done
 else
   log "No personal files to restore."
