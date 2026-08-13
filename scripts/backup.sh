@@ -54,7 +54,10 @@ sources = [
     os.path.expanduser('~/.hermes/memories'),
     os.path.expanduser('~/.hermes/config.yaml'),
     os.path.expanduser('~/.hermes/.env'),
-    os.path.expanduser('~/workspace/data')
+    os.path.expanduser('~/.hermes/skills'),
+    os.path.expanduser('~/.hermes/plugins'),
+    os.path.expanduser('~/.hermes/cron'),
+    os.path.expanduser('~/workspace')  # entire workspace including app code
 ]
 
 files_list = []
