@@ -37,6 +37,9 @@ mkdir -p "$DB_OUT" "$FILES_OUT"
 log "Backing up database directly..."
 cp "$HERMES_DB" "$DB_OUT/state.db"
 
+log "Exporting database tables to CSV..."
+HERMES_DATA_REPO="$HERMES_DATA_REPO" python3 "$HERMES_APP/scripts/export_db_csv.py"
+
 log "Backing up user data and workspace files via Python..."
 HERMES_DATA_REPO="$HERMES_DATA_REPO" python3 "$HERMES_APP/scripts/backup_files.py"
 
