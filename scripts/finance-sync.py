@@ -28,6 +28,7 @@ import sys
 import os
 import hashlib
 from datetime import datetime
+from datetime import timedelta
 
 DB_PATH = "/home/node/workspace/data/app.db"
 
@@ -121,6 +122,34 @@ def translate_value(field, value):
     return value
 
 
+def normalize_for_hash(data: dict) -> dict:
+    """Normalize data to canonical form for hash comparison.
+    Converts Hebrew sheet values to English DB values.
+    """
+    normalized = {}
+    for k, v in data.items():
+        if k == "type":
+            # Convert Hebrew to English
+            rev_type = {"הכנסה": "income", "הוצאה": "expense"}
+            normalized[k] = rev_type.get(v, v)
+        elif k == "category":
+            # Convert Hebrew to English (canonical)
+            rev_cat = {
+                "מזון וסופר": "מזון",
+                "דיור ומשכנתא/שכירות": "דיור",
+                "רכב ותחבורה": "תחבורה",
+                "שכר": "הכנסה",
+            }
+            normalized[k] = rev_cat.get(v, v)
+        elif k == "direction":
+            # Convert Hebrew to English
+            rev_dir = {"הלוואתי": "lent", "חייב": "owe"}
+            normalized[k] = rev_dir.get(v, v)
+        else:
+            normalized[k] = v
+    return normalized
+
+
 def get_db():
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
@@ -144,6 +173,48 @@ def ensure_sync_tables(db):
 def compute_hash(data: dict) -> str:
     serialized = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_date(value):
+    """Normalize date to ISO format (YYYY-MM-DD).
+    Handles Excel serial numbers, ISO strings, and various date formats."""
+    if value is None or value == "":
+        return None
+    
+    # If already ISO format (YYYY-MM-DD)
+    if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
+        return value
+    
+    # Try to parse as Excel serial number (days since 1900-01-01)
+    # Excel has a bug: it thinks 1900 is a leap year, so serial 60 = 1900-02-29 (fake)
+    # Python's datetime.fromordinal starts from 1 = 0001-01-01
+    # Excel serial 1 = 1900-01-01
+    # Python ordinal for 1900-01-01 is 693596
+    if isinstance(value, (int, float)):
+        serial = int(value)
+        if serial > 0:
+            # Excel epoch: 1900-01-01 = serial 1
+            # Python ordinal for 1900-01-01
+            excel_epoch = 693596
+            # Adjust for Excel's fake leap day (1900-02-29)
+            if serial >= 60:
+                serial -= 1
+            try:
+                dt = datetime.fromordinal(excel_epoch + serial - 1)
+                return dt.strftime("%Y-%m-%d")
+            except (ValueError, OverflowError):
+                pass
+    
+    # Try parsing as string date
+    if isinstance(value, str):
+        for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%Y/%m/%d"]:
+            try:
+                dt = datetime.strptime(value, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    
+    return str(value)
 
 
 def get_last_hash(db, row_id, collection_id, source):
@@ -182,7 +253,15 @@ def read_db_rows(db, collection_id):
         if row["meta_json"]:
             data["_meta"] = json.loads(row["meta_json"])
         data["_updated_at"] = row["updated_at"]
-        hash_data = {k: v for k, v in data.items() if not k.startswith("_")}
+        # Normalize date before computing hash
+        if "doc_date" in data:
+            data["doc_date"] = normalize_date(data["doc_date"])
+        # Normalize fields for hash comparison (Hebrew -> English canonical)
+        # Exclude metadata fields that differ between DB and Sheets
+        hash_data = {k: v for k, v in data.items() 
+                     if not k.startswith("_") 
+                     and k not in ("id", "sheet_id", "tags", "attachments", "notes", "vendor", "payment_method", "meta")}
+        hash_data = normalize_for_hash(hash_data)
         data["_hash"] = compute_hash(hash_data)
         result[row["id"]] = data
     return result
@@ -283,6 +362,20 @@ def read_sheet_rows_from_file(collection_id):
         row_dict["_hash"] = compute_hash(
             {k: v for k, v in row_dict.items() if not k.startswith("_")}
         )
+        # Normalize date before computing hash
+        if "doc_date" in row_dict:
+            row_dict["doc_date"] = normalize_date(row_dict["doc_date"])
+            # Recompute hash with normalized date, excluding metadata
+            row_dict["_hash"] = compute_hash(
+                {k: v for k, v in row_dict.items() if not k.startswith("_") and k not in ("id", "sheet_id")}
+            )
+        # Normalize fields for hash comparison (Hebrew -> English canonical)
+        # Exclude metadata fields that differ between DB and Sheets
+        hash_data = {k: v for k, v in row_dict.items() 
+                     if not k.startswith("_") 
+                     and k not in ("id", "sheet_id", "tags", "attachments", "notes", "vendor", "payment_method", "meta")}
+        hash_data = normalize_for_hash(hash_data)
+        row_dict["_hash"] = compute_hash(hash_data)
         result[sheet_id] = row_dict
 
     return result
