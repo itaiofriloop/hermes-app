@@ -540,7 +540,7 @@ def main():
         all_writes[cid]["writes"] or all_writes[cid]["updates"]
         for cid in all_writes
     )
-    if has_writes and not dry_run:
+    if has_writes:
         print("\n---SHEET_OPS_JSON---", file=sys.stderr)
         print(json.dumps(all_writes, ensure_ascii=False, indent=2), file=sys.stderr)
         print("---END_SHEET_OPS_JSON---", file=sys.stderr)
