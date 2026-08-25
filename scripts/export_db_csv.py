@@ -37,7 +37,7 @@ def export_table_to_csv(db_path, table_name, output_dir):
 
 
 def main():
-    db_path = "/home/node/workspace/data/app.db"
+    db_path = "/home/node/.hermes/state.db"
     output_dir = os.path.join(os.environ.get('HERMES_DATA_REPO', os.path.expanduser('~/projects/hermes-data')), 'database')
     
     db = sqlite3.connect(db_path)
